@@ -74,40 +74,44 @@ def get_user_stats(df, user_id):
 
 
 form = st.form(key='user-id')
-user_id = form.text_input('Please input the USER_ID (minigolf_xxxx)')
+user_id = form.text_input('ユーザーID（minigolf_xxxx）を入力してください。')
 submit = form.form_submit_button('Submit')
 
 if submit:
+    status = get_user_status(user_id)
     df = get_tracking_data()
     num_users = get_num_users(df)
-    user_shots, avg_shots_per_user, shot_number_freq = get_user_stats(df, user_id)
-    stat = f"""
-    * There are {num_users} users played so far. \n
-    * User {user_id}'s number of shots: {user_shots} \n
-    * Average number of shots: {avg_shots_per_user:.2f}
-    """
-    st.markdown(stat)
+    st.markdown(f"* これまで {num_users}人がプレイしました。")
+    if status == "completed":
+        user_shots, avg_shots_per_user, shot_number_freq = get_user_stats(df, user_id)
+        stat = f"""
+        * {user_id}のショット数: {user_shots}回 \n
+        * 平均ショット数: {avg_shots_per_user:.2f}回
+        """
+        st.markdown(stat)
 
-    commentary = fetch_commentary(user_id)
-    image = display_image(user_id)
-    st.image(image, 'Trace', width=200)
+        commentary = fetch_commentary(user_id)
+        image = display_image(user_id)
+        st.image(image, 'ボールの弾道')
 
-    # Bar Chart
-    fig, ax = plt.subplots()  # Create a Matplotlib figure and axes
-    barlist = ax.bar(shot_number_freq.index, shot_number_freq.values, color='#4285F4')
-    ax.set_xlabel('Number of Shots')
-    ax.set_ylabel('Number of Users')
-    ax.set_title('Distribution of Number of Shots per User')
-    ax.set_xlim(0, 9)
-    ax.set_xticks(range(9))
-    if user_shots in shot_number_freq.index:
-        barlist[shot_number_freq.index.get_loc(user_shots)].set_color('#34A853')
-        ax.legend([barlist[shot_number_freq.index.get_loc(user_shots)]],
-                    [f'Shot Number of {user_id}'])
+        # Bar Chart
+        fig, ax = plt.subplots()  # Create a Matplotlib figure and axes
+        barlist = ax.bar(shot_number_freq.index, shot_number_freq.values, color='#4285F4')
+        ax.set_xlabel('Number of Shots')
+        ax.set_ylabel('Number of Users')
+        ax.set_title('Distribution of Number of Shots per User')
+        ax.set_xlim(0, 9)
+        ax.set_xticks(range(9))
+        if user_shots in shot_number_freq.index:
+            barlist[shot_number_freq.index.get_loc(user_shots)].set_color('#34A853')
+            ax.legend([barlist[shot_number_freq.index.get_loc(user_shots)]],
+                      [f'Shot Number of {user_id}'])
 
-    st.pyplot(fig)  # Display the Matplotlib figure in Streamlit
+        st.pyplot(fig)  # Display the Matplotlib figure in Streamlit
 
-    # Setting the sidebar
-    with st.sidebar:
-        st.header('Commentary', divider='rainbow')
-        st.markdown(commentary)
+        # Setting the sidebar
+        with st.sidebar:
+            st.header('Commentary', divider='rainbow')
+            st.markdown(commentary)
+    else:
+        st.write(f"{user_id}さんのショット数は 集計中")
