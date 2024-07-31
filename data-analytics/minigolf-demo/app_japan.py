@@ -1,123 +1,113 @@
 import streamlit as st
+import firebase_admin
+from firebase_admin import firestore
 from google.cloud import storage
 from google.cloud import bigquery
+from PIL import Image
+import io
+import matplotlib.pyplot as plt
 
 
-trace_bucket_name = 'image_gml_a'
-BQ_COMMENTARY = "`gml-seoul-2024-demo-00.minigolf_a.commentary`"
+# Constants
+IMAGE_BUCKET = 'image_tokyo'
+PROJECT_ID = "next-tokyo-2024-golf-demo-01"
+BQ_DATASET = "minigolf"
+BQ_PREFIX = f"{PROJECT_ID}.{BQ_DATASET}"
+BQ_COMMENTARY = f"`{BQ_PREFIX}.commentary`"
 
 
-def load_file_to_raw_bytes(file_name):
-    with open(file_name, "rb") as src_file:
-        raw_string = src_file.read()
-    return raw_string
+# Initialize clients
+bq_client = bigquery.Client(location='asia-northeast1')
+storage_client = storage.Client()
+if not firebase_admin._apps:
+    firebase_admin.initialize_app(options={'projectId': f'{PROJECT_ID}'})
+db = firestore.client()
 
 
 @st.cache_data
-def fetch_commentary_and_rating(user_id):
-    client = bigquery.Client(location='asia-northeast3')
-    query_string = f"""
-        SELECT commentary
-        FROM {BQ_COMMENTARY}
-        WHERE user_id = '{user_id}'
-    """
-
-    query_job = client.query(query_string)
-    results = query_job.result()
-
-    for row in results:
-        commentary = row.commentary
-
-    return commentary
+def fetch_commentary(user_id):
+    query = f"SELECT commentary FROM {BQ_COMMENTARY} WHERE user_id='{user_id}'"
+    query_job = bq_client.query(query)
+    results = list(query_job)
+    return results[0].commentary if results else None
 
 
 @st.cache_data
 def display_image(user_id):
-    storage_client = storage.Client()
-
-    # Get a reference to your bucket and blob
     blob_name = f'{user_id}.png'
-    bucket = storage_client.bucket(trace_bucket_name)
+    bucket = storage_client.bucket(IMAGE_BUCKET)
     blob = bucket.blob(blob_name)
-
-    # Download the image content as bytes
     image_bytes = blob.download_as_bytes()
-
-    return image_bytes
-
-
-def change_player_onclick():
-    st.session_state.editing_player_number = True
+    image = Image.open(io.BytesIO(image_bytes))
+    return image
 
 
-def submit_onclick():
-    try:
-        st.session_state.player_number = edited_player_number
-        st.session_state.player_nick_name = player_nick_name
-    except ValueError:
-        st.warning("Please enter reasonable number")
-    st.session_state.editing_player_number = False
+def get_user_status(user_id):
+    """Retrieves the status of a user from Firestore."""
+    user_doc_ref = db.collection('users').document(user_id)
+    user_doc = user_doc_ref.get()
+    if not user_doc.exists:
+        return None
+    return user_doc.to_dict().get('status')
 
 
-model_name = "gemini-1.5-pro-001"
-
-# Init session state
-if "player_name" not in st.session_state:
-    st.session_state['player_name'] = None
-
-
-# Initialize session state for the player number
-if 'player_number' not in st.session_state:
-    st.session_state.player_number = 'minigolf_0013'
-if "player_nick_name" not in st.session_state:
-    st.session_state.player_nick_name = "Jeff Dean"
-
-# Flag to indicate if the player number is being edited
-if 'editing_player_number' not in st.session_state:
-    st.session_state.editing_player_number = False
-
-# st.text(f"正在查看选手的{st.session_state['player_nick_name']}结果")
-# Display the player number section
-# Initialize session state for the player number and nickname
-if 'player_number' not in st.session_state:
-    st.session_state.player_number = 1
-if 'player_nick_name' not in st.session_state:
-    st.session_state.player_nick_name = "Player 1"  # Default nickname
-
-# Flag to indicate if the player number is being edited
-if 'editing_player_number' not in st.session_state:
-    st.session_state.editing_player_number = False
+def get_tracking_data():
+    query = f"SELECT * FROM {BQ_PREFIX}.tracking"
+    df = bq_client.query(query).to_dataframe()
+    last_frame_per_user = df.groupby('user_id')['frame_number'].transform(max)
+    df_filtered = df[df['frame_number'] == last_frame_per_user]
+    df_filtered = df_filtered[df_filtered['distance'] < 30]
+    return df_filtered
 
 
-st.markdown(f'<p style="color:purple;font-size:48px;">Current Player: {st.session_state.player_nick_name}</p>', unsafe_allow_html=True)
-
-# Display the player number section
-if st.session_state.editing_player_number:
-    # If editing, display text inputs for modification in the same row
-    col1, col2 = st.columns(2)
-    with col1:
-        edited_player_number = st.text_input("Change player number", value=st.session_state.player_number, on_change=None) # Disable on_change
-    with col2:
-        player_nick_name = st.text_input("modify nickname", value=st.session_state.player_nick_name, on_change=None) # Disable on_change
-
-    # Update the session state and reset the editing flag only if Enter is pressed
-    st.button("Submit", on_click=submit_onclick)
+def get_num_users(df):
+    return df['user_id'].nunique()
 
 
-else:
-    # If not editing, display the player information and a button to trigger editing
-    st.button("Change player", on_click=change_player_onclick)
+def get_user_stats(df, user_id):
+    user_shot_counts = df.groupby('user_id')['shot_number'].first()
+    user_shot_counts = user_shot_counts[user_shot_counts > 0]
+    user_shots = user_shot_counts.get(user_id, 0)
+    avg = user_shot_counts.mean()
+    shot_number_freq = user_shot_counts.value_counts()
+    return user_shots, avg, shot_number_freq
 
 
-commentary = fetch_commentary_and_rating(st.session_state.player_number)
+form = st.form(key='user-id')
+user_id = form.text_input('Please input the USER_ID (minigolf_xxxx)')
+submit = form.form_submit_button('Submit')
 
-image_bytes = display_image(st.session_state.player_number)
+if submit:
+    df = get_tracking_data()
+    num_users = get_num_users(df)
+    user_shots, avg_shots_per_user, shot_number_freq = get_user_stats(df, user_id)
+    stat = f"""
+    * There are {num_users} users played so far. \n
+    * User {user_id}'s number of shots: {user_shots} \n
+    * Average number of shots: {avg_shots_per_user:.2f}
+    """
+    st.markdown(stat)
 
-st.image(image_bytes, 'Trace', use_column_width=True)
+    commentary = fetch_commentary(user_id)
+    image = display_image(user_id)
+    st.image(image, 'Trace', width=200)
 
+    # Bar Chart
+    fig, ax = plt.subplots()  # Create a Matplotlib figure and axes
+    barlist = ax.bar(shot_number_freq.index, shot_number_freq.values, color='#4285F4')
+    ax.set_xlabel('Number of Shots')
+    ax.set_ylabel('Number of Users')
+    ax.set_title('Distribution of Number of Shots per User')
+    ax.set_xlim(0, 9)
+    ax.set_xticks(range(9))
+    if user_shots in shot_number_freq.index:
+        barlist[shot_number_freq.index.get_loc(user_shots)].set_color('#34A853')
+        ax.legend([barlist[shot_number_freq.index.get_loc(user_shots)]],
+                    [f'Shot Number of {user_id}'])
 
-# Setting the sidebar
-with st.sidebar:
-    # Setting the Summary commentary
-    st.header('Commentary', divider='rainbow')
-    st.markdown(commentary)
+    st.pyplot(fig)  # Display the Matplotlib figure in Streamlit
+
+    # Setting the sidebar
+    with st.sidebar:
+        st.header('Commentary', divider='rainbow')
+        st.markdown(commentary)
