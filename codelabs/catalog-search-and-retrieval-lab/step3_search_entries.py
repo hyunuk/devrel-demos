@@ -13,9 +13,13 @@ semantic_req = dataplex_v1.SearchEntriesRequest(
     scope=project_scope,
     query=semantic_query,
     semantic_search=True,
-    page_size=5,
+    page_size=10,
 )
-semantic_results = list(catalog_client.search_entries(request=semantic_req))
+raw_semantic = list(catalog_client.search_entries(request=semantic_req))
+semantic_results = sorted(
+    [r for r in raw_semantic if DATASET_ID in r.dataplex_entry.name],
+    key=lambda r: r.dataplex_entry.name.split("/")[-1],
+)
 if not semantic_results:
     raise RuntimeError("Semantic search returned 0 results.")
 
@@ -29,9 +33,10 @@ for idx, res in enumerate(semantic_results[:3], start=1):
     print(f"  Hit #{idx} System: {entry.entry_source.system}")
     print(f"  Hit #{idx} Aspects Count: {len(entry.aspects)}")
 
-# 2. Structured predicate search filtering on custom aspect existence
+# 2. Structured predicate search (type=, column:, aspect:, order_by)
 structured_query = (
-    f"name:users AND system=BIGQUERY AND parent:{DATASET_ID} "
+    f"name:order_items AND system=BIGQUERY AND type=table "
+    f"AND column:sale_price AND parent:{DATASET_ID} "
     f"AND aspect:{PROJECT_ID}.global.{ASPECT_TYPE_ID}"
 )
 structured_results = []
@@ -42,6 +47,7 @@ for poll_attempt in range(1, 25):
                 name=search_scope,
                 scope=project_scope,
                 query=structured_query,
+                order_by="last_modified_timestamp",
                 page_size=5,
             )
         )

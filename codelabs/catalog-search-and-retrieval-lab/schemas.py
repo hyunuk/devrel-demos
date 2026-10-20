@@ -10,7 +10,10 @@ PROJECT_ID = os.environ.get("PROJECT_ID", "").strip()
 DATAPLEX_LOCATION = os.environ.get("DATAPLEX_LOCATION", "us").strip()
 GEMINI_LOCATION = os.environ.get("GEMINI_LOCATION", "global").strip()
 DATASET_ID = os.environ.get("DATASET_ID", "kc_ecommerce_sandbox").strip()
-ASPECT_TYPE_ID = os.environ.get("ASPECT_TYPE_ID", "pii").strip()
+ASPECT_TYPE_ID = os.environ.get("ASPECT_TYPE_ID", "metric-governance").strip()
+ENTRY_LINK_ID = os.environ.get(
+    "ENTRY_LINK_ID", "el-order-items-products-join"
+).strip()
 STATE_FILE = "catalog_state.json"
 
 if not PROJECT_ID or PROJECT_ID == "your-project-id":
@@ -23,19 +26,19 @@ if not DATAPLEX_LOCATION or DATAPLEX_LOCATION == "your-location":
     )
 
 
-class PiiColumnFinding(BaseModel):
+class ColumnGovernanceFinding(BaseModel):
     column_name: str = Field(
-        description="BigQuery column name bound to the pii aspect."
+        description="BigQuery column name bound to metric-governance aspect."
     )
-    pii_type: str = Field(
-        description="Classified PII category (EMAIL, NAME, ADDRESS, etc.)."
+    governance_role: str = Field(
+        description="Assigned analytical role (REVENUE_METRIC, JOIN_KEY, etc.)."
     )
-    masked: bool = Field(
-        description="True when column values are masked or de-identified."
+    certified_for_ai: bool = Field(
+        description="True when certified for AI-generated SQL queries."
     )
 
 
-class ComplianceAuditReport(BaseModel):
+class GovernanceAuditReport(BaseModel):
     entry_resource_name: str = Field(
         description="Full Knowledge Catalog entry resource path."
     )
@@ -43,13 +46,16 @@ class ComplianceAuditReport(BaseModel):
         description="Numeric project-number aspect key prefix."
     )
     total_annotated_columns: int = Field(
-        description="Count of columns annotated with pii aspects."
+        description="Count of columns annotated with metric-governance aspects."
     )
-    unmasked_violations: List[PiiColumnFinding] = Field(
-        description="Columns where masked=False requiring remediation."
+    filtered_path_columns: List[str] = Field(
+        description="Columns returned when filtering by Schema.<col> paths."
     )
-    masked_compliant_columns: List[str] = Field(
-        description="Column names where masked=True."
+    restricted_columns: List[ColumnGovernanceFinding] = Field(
+        description="Columns where certified_for_ai=False."
+    )
+    certified_columns: List[str] = Field(
+        description="Column names where certified_for_ai=True."
     )
 
 
@@ -64,52 +70,52 @@ class GroundedAgentDecision(BaseModel):
         description="Synthesized BigQuery Standard SQL query."
     )
     grounding_rationale: str = Field(
-        description="Explanation of how lookup_context guided SQL synthesis."
+        description="Explanation of how catalog context guided SQL synthesis."
     )
 
 
 # Matching Knowledge Catalog AspectType metadata template (1-based indices)
-pii_aspect_template = dataplex_v1.AspectType.MetadataTemplate(
-    name="pii_metadata",
+metric_governance_template = dataplex_v1.AspectType.MetadataTemplate(
+    name="metric_governance_metadata",
     type_="record",
     record_fields=[
         dataplex_v1.AspectType.MetadataTemplate(
-            name="pii_type",
+            name="governance_role",
             type_="enum",
             index=1,
             enum_values=[
                 dataplex_v1.AspectType.MetadataTemplate.EnumValue(
-                    name="EMAIL", index=1
+                    name="REVENUE_METRIC", index=1
                 ),
                 dataplex_v1.AspectType.MetadataTemplate.EnumValue(
-                    name="NAME", index=2
+                    name="LIFECYCLE_FILTER", index=2
                 ),
                 dataplex_v1.AspectType.MetadataTemplate.EnumValue(
-                    name="ADDRESS", index=3
+                    name="JOIN_KEY", index=3
                 ),
                 dataplex_v1.AspectType.MetadataTemplate.EnumValue(
-                    name="PHONE_NUMBER", index=4
+                    name="INTERNAL_OPS_KEY", index=4
                 ),
                 dataplex_v1.AspectType.MetadataTemplate.EnumValue(
-                    name="DEMOGRAPHIC", index=5
+                    name="RESTRICTED_IDENTIFIER", index=5
                 ),
                 dataplex_v1.AspectType.MetadataTemplate.EnumValue(
-                    name="OTHER", index=6
+                    name="LOGISTICS_TIMESTAMP", index=6
                 ),
             ],
             annotations=dataplex_v1.AspectType.MetadataTemplate.Annotations(
-                description="Classified category of personal information."
+                description="Analytical role of the column in SQL reporting."
             ),
             constraints=dataplex_v1.AspectType.MetadataTemplate.Constraints(
                 required=True
             ),
         ),
         dataplex_v1.AspectType.MetadataTemplate(
-            name="masked",
+            name="certified_for_ai",
             type_="bool",
             index=2,
             annotations=dataplex_v1.AspectType.MetadataTemplate.Annotations(
-                description="Indicates whether column values are masked."
+                description="True when column is certified for AI SQL queries."
             ),
             constraints=dataplex_v1.AspectType.MetadataTemplate.Constraints(
                 required=True
@@ -119,13 +125,73 @@ pii_aspect_template = dataplex_v1.AspectType.MetadataTemplate(
 )
 
 COLUMN_GOVERNANCE_RULES = {
-    "email": {"pii_type": "EMAIL", "masked": False},
-    "first_name": {"pii_type": "NAME", "masked": False},
-    "last_name": {"pii_type": "NAME", "masked": False},
-    "street_address": {"pii_type": "ADDRESS", "masked": False},
-    "postal_code": {"pii_type": "ADDRESS", "masked": True},
-    "age": {"pii_type": "DEMOGRAPHIC", "masked": True},
-    "gender": {"pii_type": "DEMOGRAPHIC", "masked": True},
+    "sale_price": {
+        "governance_role": "REVENUE_METRIC",
+        "certified_for_ai": True,
+    },
+    "status": {
+        "governance_role": "LIFECYCLE_FILTER",
+        "certified_for_ai": True,
+    },
+    "product_id": {
+        "governance_role": "JOIN_KEY",
+        "certified_for_ai": True,
+    },
+    "inventory_item_id": {
+        "governance_role": "INTERNAL_OPS_KEY",
+        "certified_for_ai": False,
+    },
+    "user_id": {
+        "governance_role": "RESTRICTED_IDENTIFIER",
+        "certified_for_ai": False,
+    },
+    "shipped_at": {
+        "governance_role": "LOGISTICS_TIMESTAMP",
+        "certified_for_ai": False,
+    },
+    "returned_at": {
+        "governance_role": "LOGISTICS_TIMESTAMP",
+        "certified_for_ai": False,
+    },
+}
+
+TABLE_DESCRIPTIONS = {
+    "users": (
+        "Customer profile table. Primary key: id. "
+        "Joins to orders.user_id."
+    ),
+    "orders": (
+        "Customer order header table. Primary key: order_id. "
+        "Foreign key: user_id -> users.id."
+    ),
+    "order_items": (
+        "Order line items table. Foreign keys: order_id -> orders.order_id, "
+        "product_id -> products.id. Revenue metric: sale_price (USD)."
+    ),
+    "products": (
+        "Product catalog dimension table. Primary key: id "
+        "(join target for order_items.product_id). Category column: category."
+    ),
+}
+
+COLUMN_DESCRIPTIONS = {
+    "order_items": {
+        "id": "Unique order line item identifier.",
+        "order_id": "Foreign key to orders.order_id.",
+        "user_id": "Restricted customer identifier.",
+        "product_id": "Foreign key joining to products.id.",
+        "inventory_item_id": "Internal warehouse inventory key.",
+        "status": "Fulfillment status (filter WHERE status = 'Complete').",
+        "sale_price": "Completed item sale price in USD.",
+        "shipped_at": "Warehouse shipment timestamp.",
+        "returned_at": "Return processing timestamp.",
+    },
+    "products": {
+        "id": "Primary product identifier joined with order_items.product_id.",
+        "category": "Product merchandise category for revenue reporting.",
+        "brand": "Product manufacturer brand name.",
+        "retail_price": "Catalog list price in USD.",
+    },
 }
 
 
@@ -164,6 +230,7 @@ if __name__ == "__main__":
     print(f"Gemini Endpoint Location: {GEMINI_LOCATION}")
     print(f"Target BigQuery Dataset: {DATASET_ID}")
     print(f"Custom AspectType ID: {ASPECT_TYPE_ID}")
-    print("✓ Validated PiiColumnFinding, ComplianceAuditReport, and")
+    print(f"Schema-Join EntryLink ID: {ENTRY_LINK_ID}")
+    print("✓ Validated ColumnGovernanceFinding, GovernanceAuditReport, and")
     print("  GroundedAgentDecision Pydantic schemas.")
-    print("✓ Prepared pii AspectType metadata template.")
+    print("✓ Prepared metric-governance AspectType metadata template.")
