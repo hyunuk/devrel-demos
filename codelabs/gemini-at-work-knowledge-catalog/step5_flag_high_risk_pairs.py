@@ -92,37 +92,36 @@ model_id = resolve_newest_flash_model(genai_client)
 t_logs = f"`{PROJECT_ID}.{DATASET_ID}.transaction_logs`"
 t_payers = f"`{PROJECT_ID}.{DATASET_ID}.dim_payers`"
 t_payees = f"`{PROJECT_ID}.{DATASET_ID}.dim_payees`"
-hr_expr = "SUM(CASE WHEN pr.payor_risk_score >= 0.70 THEN amount ELSE 0 END)"
-pct_expr = f"ROUND(SAFE_DIVIDE({hr_expr}, SUM(amount)) * 100, 2)"
 prompt = f"""
 You are a BigQuery SQL generator grounded in Knowledge Catalog metadata.
 Generate a BigQuery Standard SQL query that joins:
-- {t_logs} (deduplicated)
-- {t_payers} on `payor_id`
-- {t_payees} on `payee_id`
+- {t_logs} (transaction_id, payor_id, payee_id, amount, currency, status,
+  timestamp)
+- {t_payers} (payor_id, payor_country, payor_risk_score)
+- {t_payees} (payee_id, payee_country, payee_category)
 
-Apply these exact Knowledge Catalog payment-rules aspect fields:
+Apply these Knowledge Catalog `payment-rules` aspect fields retrieved from
+{t_logs}:
 - deduplication_rule: {payment_rules['deduplication_rule']}
 - valid_payment_filter: {payment_rules['valid_payment_filter']}
 - high_risk_review_rule: {payment_rules['high_risk_review_rule']}
 
-Requirements for `bigquery_sql`:
-1. In a CTE `deduped_logs`, exclude blank `transaction_id` rows
-   (`transaction_id IS NOT NULL AND TRIM(transaction_id) != ''`), compute
-   `ROW_NUMBER() OVER (PARTITION BY transaction_id ORDER BY timestamp ASC) AS rn`,
-   and keep `rn = 1` with `status = 'COMPLETED' AND amount > 0`
-   and `currency IN ('USD', 'EUR', 'GBP')`.
-2. Join `dim_payers` (`pr`) on `payor_id` and `dim_payees` (`py`) on
-   `payee_id`, and group by `py.payee_country, py.payee_category`.
-3. Compute:
+Output requirements for `bigquery_sql`:
+1. Deduplicate and filter {t_logs} according to `deduplication_rule` and
+   `valid_payment_filter` before joining {t_payers} and {t_payees}.
+2. Group by `payee_country, payee_category` and return these exact column
+   names:
    - `payee_country`
    - `payee_category`
-   - `ROUND(SUM(amount), 2) AS total_volume`
-   - `ROUND({hr_expr}, 2) AS high_risk_volume`
-   - `{pct_expr} AS high_risk_volume_pct`
-   - `CASE WHEN {pct_expr} >= 4.00 THEN 'REVIEW_REQUIRED' ELSE 'NORMAL' END AS review_status`
-4. Order by `total_volume DESC` and `LIMIT 6`.
-Return raw SQL without markdown fences in `bigquery_sql`.
+   - `total_volume` (sum of valid `amount` rounded to 2 decimal places)
+   - `high_risk_volume` (sum of valid `amount` matching the high-risk payer
+     criterion in `high_risk_review_rule`, rounded to 2 decimal places)
+   - `high_risk_volume_pct` (percentage 0 to 100 of `high_risk_volume`
+     divided by `total_volume` using `SAFE_DIVIDE`, rounded to 2 decimals)
+   - `review_status` (evaluated from `high_risk_review_rule` using the
+     rounded percentage threshold)
+3. Order by `total_volume DESC` and `LIMIT 6`.
+Return raw BigQuery Standard SQL without markdown fences in `bigquery_sql`.
 """
 
 response = genai_client.models.generate_content(

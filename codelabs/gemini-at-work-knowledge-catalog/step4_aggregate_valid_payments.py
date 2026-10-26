@@ -21,15 +21,24 @@ GEMINI_LOCATION = os.environ.get("GEMINI_LOCATION", "global")
 ASPECT_TYPE_ID = os.environ.get("ASPECT_TYPE_ID", "payment-rules")
 
 
-class PaymentAggregationPlan(BaseModel):
+class PaymentAggregationComparisonPlan(BaseModel):
+    baseline_sql: str = Field(
+        description=(
+            "Baseline BigQuery Standard SQL query generated from physical "
+            "table schemas only, without Knowledge Catalog rules."
+        )
+    )
     applied_deduplication_rule: str = Field(
-        description="Deduplication rule from Knowledge Catalog."
+        description="Deduplication rule read from Knowledge Catalog."
     )
     applied_valid_payment_filter: str = Field(
-        description="Valid payment filter from Knowledge Catalog."
+        description="Valid payment filter read from Knowledge Catalog."
     )
-    bigquery_sql: str = Field(
-        description="Executable BigQuery Standard SQL query."
+    governed_sql: str = Field(
+        description=(
+            "Governed BigQuery Standard SQL query applying the "
+            "Knowledge Catalog payment-rules aspect."
+        )
     )
 
 
@@ -95,30 +104,30 @@ model_id = resolve_newest_flash_model(genai_client)
 t_logs = f"`{PROJECT_ID}.{DATASET_ID}.transaction_logs`"
 t_payees = f"`{PROJECT_ID}.{DATASET_ID}.dim_payees`"
 prompt = f"""
-You are a BigQuery SQL generator grounded in Knowledge Catalog metadata.
-Generate a BigQuery Standard SQL query over {t_logs} (aliased as t)
-joined with {t_payees} (aliased as py) on `t.payee_id = py.payee_id`.
+You are comparing ungrounded vs. Knowledge Catalog-grounded BigQuery SQL
+generation over {t_logs} joined with {t_payees} on `payee_id`.
 
-Apply these exact Knowledge Catalog payment-rules aspect fields:
-- deduplication_rule: {payment_rules['deduplication_rule']}
-- valid_payment_filter: {payment_rules['valid_payment_filter']}
+Physical table schemas:
+- {t_logs}: transaction_id STRING, payor_id STRING, payee_id STRING,
+  amount FLOAT64, currency STRING, status STRING, timestamp TIMESTAMP
+- {t_payees}: payee_id STRING, payee_country STRING, payee_category STRING
 
-Requirements for `bigquery_sql`:
-1. In a CTE named `deduped_logs`, exclude blank `transaction_id` rows
-   (`transaction_id IS NOT NULL AND TRIM(transaction_id) != ''`) and compute
-   `ROW_NUMBER() OVER (PARTITION BY transaction_id ORDER BY timestamp ASC) AS rn`.
-2. Keep only `rn = 1` and apply the valid payment filter:
-   `status = 'COMPLETED' AND amount > 0 AND currency IN ('USD', 'EUR', 'GBP')`.
-3. Join with {t_payees} on `payee_id` and group by
-   `payee_country, payee_category`.
-4. Return exactly these columns:
-   - `payee_country`
-   - `payee_category`
-   - `COUNT(*) AS valid_tx_count`
-   - `ROUND(SUM(amount), 2) AS total_volume`
-   - `ROUND(AVG(amount), 2) AS avg_payment_size`
-5. Order by `total_volume DESC` and `LIMIT 6`.
-Return raw SQL without markdown fences in `bigquery_sql`.
+1. For `baseline_sql` (Without Knowledge Catalog):
+   Generate a direct schema-only aggregation query joining {t_logs} and
+   {t_payees} on `payee_id` without any Knowledge Catalog deduplication CTE.
+2. For `governed_sql` (With Knowledge Catalog):
+   Apply these Knowledge Catalog `payment-rules` aspect fields retrieved
+   from {t_logs} before aggregating:
+   - deduplication_rule: {payment_rules['deduplication_rule']}
+   - valid_payment_filter: {payment_rules['valid_payment_filter']}
+
+Output requirements for both queries:
+- Group by `payee_country, payee_category`.
+- Return columns `payee_country`, `payee_category`,
+  `COUNT(*) AS valid_tx_count`, `ROUND(SUM(amount), 2) AS total_volume`,
+  and `ROUND(AVG(amount), 2) AS avg_payment_size`.
+- Order by `total_volume DESC` and `LIMIT 6`.
+- Return raw BigQuery Standard SQL without markdown fences.
 """
 
 response = genai_client.models.generate_content(
@@ -126,17 +135,27 @@ response = genai_client.models.generate_content(
     contents=prompt,
     config=types.GenerateContentConfig(
         response_mime_type="application/json",
-        response_schema=PaymentAggregationPlan,
+        response_schema=PaymentAggregationComparisonPlan,
         temperature=0.0,
         automatic_function_calling=types.AutomaticFunctionCallingConfig(
             disable=True
         ),
     ),
 )
-plan = PaymentAggregationPlan.model_validate_json(response.text)
+plan = PaymentAggregationComparisonPlan.model_validate_json(response.text)
 
 bq_client = bigquery.Client(project=PROJECT_ID, location=BQ_LOCATION)
-rows = [
+baseline_rows = [
+    {
+        "payee_country": r.payee_country,
+        "payee_category": r.payee_category,
+        "raw_tx_count": int(r.valid_tx_count),
+        "raw_volume": float(r.total_volume),
+        "raw_avg_size": float(r.avg_payment_size),
+    }
+    for r in bq_client.query(plan.baseline_sql).result()
+]
+governed_rows = [
     {
         "payee_country": r.payee_country,
         "payee_category": r.payee_category,
@@ -144,16 +163,28 @@ rows = [
         "total_volume": float(r.total_volume),
         "avg_payment_size": float(r.avg_payment_size),
     }
-    for r in bq_client.query(plan.bigquery_sql).result()
+    for r in bq_client.query(plan.governed_sql).result()
 ]
+
+b_top = baseline_rows[0]
+g_top = governed_rows[0]
+overstated_tx = b_top["raw_tx_count"] - g_top["valid_tx_count"]
+overstated_usd = round(b_top["raw_volume"] - g_top["total_volume"], 2)
 
 print(json.dumps({
     "catalog_rule_applied": True,
-    "top_6_country_category_pairs": rows,
+    "us_healthcare_without_catalog": b_top,
+    "us_healthcare_with_catalog": g_top,
+    "us_healthcare_overstated_tx_removed": overstated_tx,
+    "us_healthcare_overstated_usd_removed": overstated_usd,
+    "top_6_country_category_pairs": governed_rows,
 }, indent=2))
 
-top_row = rows[0]
-assert top_row["payee_country"] == "US"
-assert top_row["payee_category"] == "Healthcare"
-assert top_row["valid_tx_count"] == 91762
-assert top_row["total_volume"] == 83759597.75
+assert b_top["raw_tx_count"] == 93155
+assert b_top["raw_volume"] == 85045494.88
+assert g_top["payee_country"] == "US"
+assert g_top["payee_category"] == "Healthcare"
+assert g_top["valid_tx_count"] == 91762
+assert g_top["total_volume"] == 83759597.75
+assert overstated_tx == 1393
+assert overstated_usd == 1285897.13

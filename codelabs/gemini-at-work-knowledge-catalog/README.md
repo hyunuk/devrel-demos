@@ -19,11 +19,11 @@ Knowledge Catalog** Google Cloud Codelab (`gemini-at-work-knowledge-catalog`).
    `search_entries` and `lookup_context` for `payment_analytics` tables and
    dynamically resolves the newest active Gemini 3.x+ Flash model on the
    `global` endpoint via `google-genai`.
-4. `step4_aggregate_valid_payments.py` reads the `payment-rules` aspect from
-   Knowledge Catalog via `lookup_entry`, passes its deduplication and
-   valid-payment filter rules into Gemini (`response_schema=PaymentAggregationPlan`),
-   and executes the generated BigQuery SQL query grouped by recipient country
-   and category.
+4. `step4_aggregate_valid_payments.py` generates both a schema-only baseline
+   query (without Knowledge Catalog) and a governed query grounded in the
+   `payment-rules` aspect (`response_schema=PaymentAggregationComparisonPlan`),
+   comparing how deduplication removes overstated retry volume across recipient
+   countries and categories.
 5. `step5_flag_high_risk_pairs.py` applies the `high_risk_review_rule` threshold
    (`payor_risk_score >= 0.70` and `high_risk_volume_pct >= 4.00%`) to join
    `transaction_logs`, `dim_payers`, and `dim_payees` and flag recipient country
