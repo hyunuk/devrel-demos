@@ -81,61 +81,72 @@ print(f"AspectType ready: {aspect_type_obj.name}")
 TABLE_CONTRACTS = {
     "customer_feedback": {
         "summary": (
-            "Customer review table covering Charlie's Coffee stores and named"
-            " local competitors across San Francisco ZIP codes. Always filter"
-            " WHERE business_type = 'own_store' before reporting Charlie's"
-            " Coffee ratings or store counts."
+            "Customer review table covering Charlie's Coffee stores and local"
+            " competitors across San Francisco ZIP codes. For Charlie's Coffee"
+            " customer ratings or store experience scores, ALWAYS filter"
+            " WHERE business_type = 'own_store' AND source IN ('Google Maps',"
+            " 'Yelp') to exclude competitor cafes and third-party DoorDash"
+            " courier delivery ratings."
         ),
         "entity_scope": (
-            "Mixed brand and competitor reviews (120 Charlie's Coffee rows and"
-            " 180 competitor rows)."
+            "Mixed reviews across Google Maps, Yelp, and DoorDash (only 76 rows"
+            " represent verified in-cafe Charlie's Coffee visits)."
         ),
-        "required_sql_filter": "business_type = 'own_store'",
+        "required_sql_filter": (
+            "business_type = 'own_store' AND source IN ('Google Maps', 'Yelp')"
+        ),
         "metric_rule": (
-            "For Charlie's Coffee customer ratings, filter WHERE business_type"
-            " = 'own_store'. Only 6 San Francisco ZIP codes (94102, 94103,"
-            " 94110, 94118, 94123, 94133) have Charlie's Coffee stores; rows in"
-            " 94121 and 94122 belong exclusively to competitors."
+            "For Charlie's Coffee average customer rating by ZIP code, filter"
+            " WHERE business_type = 'own_store' AND source IN ('Google Maps',"
+            " 'Yelp'). DoorDash rows reflect third-party courier transit and"
+            " are excluded from Charlie's Coffee store ratings."
         ),
     },
     "historical_sales": {
         "summary": (
-            "Weekly store and SKU sales for Charlie's Coffee own stores only"
-            " (104 ISO weeks). Use SUM(net_revenue) as the numerator when"
-            " calculating Charlie's Coffee market capture rate by zip_code."
+            "Weekly store and SKU net revenue for Charlie's Coffee own stores."
+            " SKU prefixes encode product lines: SKU-1xx (Espresso Drinks),"
+            " SKU-2xx (Filter Coffee), SKU-3xx (Cold Beverages), SKU-4xx"
+            " (Tea & Matcha), SKU-5xx (Retail Beans), SKU-6xx (Food & Snacks),"
+            " and SKU-7xx (Merchandise). For coffee market capture rate, include"
+            " ONLY prepared beverage SKUs (SKU-1%, SKU-2%, SKU-3%, SKU-4%)."
         ),
         "entity_scope": (
-            "Charlie's Coffee own-store weekly sales across 6 operating San"
-            " Francisco ZIP codes."
+            "Charlie's Coffee weekly store sales across prepared beverages,"
+            " whole-bean retail bags, food, and merchandise."
         ),
-        "required_sql_filter": "NONE (all rows represent Charlie's Coffee own stores)",
+        "required_sql_filter": (
+            "REGEXP_CONTAINS(sku, r'^SKU-[1-4]') when comparing against"
+            " market_demand.category_spend_usd"
+        ),
         "metric_rule": (
-            "Aggregate SUM(net_revenue) grouped by zip_code first, then join"
+            "Filter WHERE REGEXP_CONTAINS(sku, r'^SKU-[1-4]') to exclude"
+            " SKU-5xx retail beans, SKU-6xx food, and SKU-7xx merchandise,"
+            " aggregate SUM(net_revenue) grouped by zip_code first, then join"
             " to aggregated market_demand on zip_code and compute"
-            " SAFE_DIVIDE(SUM(net_revenue), SUM(category_spend_usd)) for store"
-            " market capture rate."
+            " SAFE_DIVIDE(beverage_revenue, total_market_spend)."
         ),
     },
     "market_demand": {
         "summary": (
-            "Whole-market weekly coffee spend across ALL coffee businesses in"
-            " each San Francisco ZIP code (15 ZIP codes total), NOT Charlie's"
-            " Coffee revenue. Use SUM(category_spend_usd) as the denominator"
-            " for Charlie's Coffee market capture rate."
+            "Whole-market weekly prepared-beverage spend across ALL coffee"
+            " shops in each San Francisco ZIP code (15 ZIP codes), NOT"
+            " Charlie's Coffee revenue. Excludes packaged retail beans, food,"
+            " and merchandise. Pre-aggregate SUM(category_spend_usd) by"
+            " zip_code before joining to historical_sales."
         ),
         "entity_scope": (
-            "Total third-party coffee-category spend across all businesses in"
-            " 15 San Francisco ZIP codes."
+            "Third-party prepared-beverage spend across all coffee businesses"
+            " in 15 San Francisco ZIP codes."
         ),
         "required_sql_filter": (
-            "Join to historical_sales on zip_code after pre-aggregating each"
-            " table by zip_code to avoid week-by-SKU fan-out."
+            "Pre-aggregate SUM(category_spend_usd) by zip_code before joining"
+            " to historical_sales (filtered to SKU-1xx through SKU-4xx)."
         ),
         "metric_rule": (
-            "category_spend_usd is whole-ZIP coffee spend across every coffee"
-            " shop, never Charlie's Coffee revenue. Market capture rate per"
-            " store ZIP = SAFE_DIVIDE(brand_zip_sales.brand_revenue,"
-            " zip_market.total_market_spend)."
+            "category_spend_usd measures prepared beverage spend only. Market"
+            " capture rate per store ZIP = SAFE_DIVIDE(SUM(net_revenue for"
+            " SKU-1xx..SKU-4xx), SUM(category_spend_usd))."
         ),
     },
 }
