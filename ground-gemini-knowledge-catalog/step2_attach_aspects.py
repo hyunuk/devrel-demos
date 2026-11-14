@@ -73,11 +73,10 @@ try:
             metadata_template=aspect_template,
         ),
     )
-    created_aspect_type = create_op.result()
-    print(f"Created AspectType: {created_aspect_type.name}")
+    aspect_type_obj = create_op.result()
 except gcp_exceptions.AlreadyExists:
-    existing_aspect_type = catalog_client.get_aspect_type(name=aspect_type_name)
-    print(f"Reusing existing AspectType: {existing_aspect_type.name}")
+    aspect_type_obj = catalog_client.get_aspect_type(name=aspect_type_name)
+print(f"AspectType ready: {aspect_type_obj.name}")
 
 TABLE_CONTRACTS = {
     "customer_feedback": {
